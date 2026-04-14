@@ -91,6 +91,14 @@ python <skill-dir>/scripts/learn.py next --root "<项目或笔记根目录>"
 python <skill-dir>/scripts/learn.py review --root "<项目或笔记根目录>"
 ```
 
+如果你希望把“资料全覆盖但不等权”“阶段学习计划”“多老师分工建议”显式落到文件里，可以这样：
+
+```bash
+python <skill-dir>/scripts/learn.py coverage --root "<项目或笔记根目录>"
+python <skill-dir>/scripts/learn.py plan --root "<项目或笔记根目录>"
+python <skill-dir>/scripts/learn.py team --root "<项目或笔记根目录>"
+```
+
 ## 工作流
 
 ### 0. 身份与开场
@@ -403,6 +411,29 @@ python <skill-dir>/scripts/learn.py review --root "<项目或笔记根目录>"
 
 打开当前学习会话，生成或更新 `session_brief.md`。
 当信息还没对齐时，它会输出一组引导问题，帮助你和用户把目标、资料、颗粒度、重点、场景边界先说清楚。
+
+### `scripts/learn.py coverage`
+
+整理资料覆盖分层。
+默认要求资料里的点都有去处，但不是每个点都同样细讲。
+会把资料点分成：
+- 核心必讲
+- 重点精讲
+- 支持理解
+- 背景点到为止
+- 本轮不展开
+
+结果写入 `coverage_map.md`。
+
+### `scripts/learn.py plan`
+
+基于当前资料、覆盖层级和学习目标，生成一版有主次和阶段顺序的 `study_plan.md`。
+这一步不是平均罗列内容，而是把覆盖矩阵转成有逻辑的学习路线。
+
+### `scripts/learn.py team`
+
+基于当前资料量、学习节奏和测验需求，生成一版多老师分工建议。
+结果写入 `agent_team.md`。
 
 ### `scripts/configure_learning_protocol.py`
 

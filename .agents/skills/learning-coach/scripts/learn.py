@@ -16,6 +16,75 @@ SESSION_SCRIPT = SCRIPT_DIR / "open_learning_session.py"
 QUIZ_SCRIPT = SCRIPT_DIR / "generate_quiz.py"
 RECORD_SCRIPT = SCRIPT_DIR / "record_learning_session.py"
 
+COVERAGE_LEVELS = [
+    "核心必讲",
+    "重点精讲",
+    "支持理解",
+    "背景点到为止",
+    "本轮不展开",
+]
+
+LEVEL_DEFAULTS = {
+    "核心必讲": {
+        "reason": "直接服务当前学习目标，必须进入主线精讲。",
+        "stage": "阶段2",
+        "unit": "主线精讲",
+        "quiz": "必须进入过程题和阶段题",
+        "status": "待学习",
+    },
+    "重点精讲": {
+        "reason": "重要但次于主线，需要完整理解和例子。",
+        "stage": "阶段2",
+        "unit": "重点展开",
+        "quiz": "优先进过程题",
+        "status": "待学习",
+    },
+    "支持理解": {
+        "reason": "不是主角，但不补会影响理解主线。",
+        "stage": "阶段2",
+        "unit": "理解支撑",
+        "quiz": "只在服务重点时进入题目",
+        "status": "待学习",
+    },
+    "背景点到为止": {
+        "reason": "只需要知道存在和作用，不展开成新主线。",
+        "stage": "阶段1",
+        "unit": "背景提示",
+        "quiz": "默认不单独出题",
+        "status": "点到为止",
+    },
+    "本轮不展开": {
+        "reason": "资料里有，但当前轮次先不讲，避免打断主线。",
+        "stage": "后续阶段",
+        "unit": "暂缓处理",
+        "quiz": "当前不出题",
+        "status": "后移",
+    },
+}
+
+ROLE_LIBRARY = {
+    "主讲老师": {
+        "duty": "建立主线、推进讲解、控制颗粒度和场景边界",
+        "when": "始终需要",
+        "output": "`study_plan.md`、`session_brief.md`、主线讲解",
+    },
+    "出题老师": {
+        "duty": "负责过程题、阶段题、追问题",
+        "when": "需要持续测验时",
+        "output": "`quiz_log.md`、`quiz_bank.md`",
+    },
+    "复盘老师": {
+        "duty": "负责错因分析、薄弱点归纳、下一步建议",
+        "when": "错误较多或需要持续复盘时",
+        "output": "`mistakes.md`、`progress.md`",
+    },
+    "资料梳理老师": {
+        "duty": "负责资料覆盖分层、主次划分和漏点检查",
+        "when": "资料多、来源杂时",
+        "output": "`materials_index.md`、`coverage_map.md`",
+    },
+}
+
 
 def configure_stdio() -> None:
     if hasattr(sys.stdout, "reconfigure"):
@@ -29,10 +98,14 @@ def run_script(script_path: Path, arguments: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def clean_text(value: str) -> str:
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 def ask_text(prompt: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     value = input(f"{prompt}{suffix}：").strip()
-    return value or default
+    return clean_text(value or default)
 
 
 def ask_int(prompt: str, default: int) -> int:
@@ -217,11 +290,405 @@ def count_table_rows(path: Path) -> int:
     return len(parse_markdown_table(path))
 
 
+def table_cell(value: str) -> str:
+    return clean_text(value).replace("|", "\\|").replace("\n", " ").strip()
+
+
 def parse_first_number(text: str, default: int) -> int:
     match = re.search(r"(\d+)", text or "")
     if not match:
         return default
     return max(1, int(match.group(1)))
+
+
+def read_markdown_sections(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return parse_markdown_sections(path.read_text(encoding="utf-8"))
+
+
+def parse_material_point_entry(raw: str) -> tuple[str, str]:
+    text = raw.strip()
+    if not text:
+        return "", ""
+    if "=>" in text:
+        material, point = text.split("=>", 1)
+    elif "|" in text:
+        material, point = text.split("|", 1)
+    else:
+        return "未指定材料", text
+    return material.strip() or "未指定材料", point.strip()
+
+
+def stringify_coverage_entries(rows: list[dict[str, str]], level: str) -> list[str]:
+    result: list[str] = []
+    for row in rows:
+        if row.get("层级", "") != level:
+            continue
+        material = row.get("材料", "").strip() or "未指定材料"
+        point = row.get("知识点 / 片段", "").strip()
+        if point:
+            result.append(f"{material}=>{point}")
+    return result
+
+
+def coverage_map_summary(root: Path) -> dict:
+    path = planning_dir(root) / "coverage_map.md"
+    rows = parse_markdown_table(path)
+    counts = {level: 0 for level in COVERAGE_LEVELS}
+    materials: list[str] = []
+    for row in rows:
+        level = row.get("层级", "")
+        if level in counts:
+            counts[level] += 1
+        material = row.get("材料", "").strip()
+        if material and material not in materials:
+            materials.append(material)
+    sections = read_markdown_sections(path)
+    return {
+        "path": path,
+        "rows": rows,
+        "counts": counts,
+        "total": len(rows),
+        "materials": materials,
+        "gaps": extract_bullets(sections.get("当前覆盖缺口", "")),
+        "next_priority": extract_bullets(sections.get("下一步处理", "")),
+    }
+
+
+def format_coverage_brief(summary: dict) -> str:
+    if summary.get("total", 0) == 0:
+        return "未建立资料覆盖矩阵"
+    counts = summary["counts"]
+    return (
+        f"核心 {counts['核心必讲']} / 重点 {counts['重点精讲']} / "
+        f"支持 {counts['支持理解']} / 背景 {counts['背景点到为止']} / "
+        f"后移 {counts['本轮不展开']}"
+    )
+
+
+def study_plan_ready(root: Path) -> bool:
+    path = planning_dir(root) / "study_plan.md"
+    rows = parse_markdown_table(path)
+    if not rows:
+        return False
+
+    default_goals = {"认识主题", "核心概念", "应用实践", "复盘测试"}
+    default_whys = {
+        "先建立整体地图和边界",
+        "优先吃透主线和高频重点",
+        "把重点放进例子、练习或项目场景",
+        "回收薄弱点并验证整体掌握",
+    }
+    for row in rows:
+        if row.get("资料", "").strip() or row.get("产出物", "").strip() or row.get("目标日期", "").strip():
+            return True
+        goal = row.get("目标", "").strip()
+        why = row.get("为什么这样安排", "").strip()
+        if goal and goal not in default_goals:
+            return True
+        if why and why not in default_whys:
+            return True
+    return False
+
+
+def agent_team_snapshot(root: Path) -> dict[str, str]:
+    sections = read_markdown_sections(planning_dir(root) / "agent_team.md")
+    return {
+        "recommendation": compact_markdown_value(sections.get("是否建议开启", "")),
+        "current": compact_markdown_value(sections.get("当前建议", "")),
+    }
+
+
+def agent_team_configured(root: Path) -> bool:
+    snapshot = agent_team_snapshot(root)
+    recommendation = snapshot.get("recommendation", "")
+    current = snapshot.get("current", "")
+    return "待判断" not in recommendation and "待填写" not in current and recommendation != "待确认"
+
+
+def infer_agent_team(root: Path) -> dict:
+    session = read_session_sections(root)
+    protocol = read_protocol(root)
+    materials = extract_bullets(session.get("当前资料", ""))
+    progress_entries = count_progress_entries(planning_dir(root) / "progress.md")
+    due_quizzes, due_mistakes = due_review_summary(root)
+
+    roles = ["主讲老师"]
+    reasons: list[str] = []
+
+    if len(materials) >= 3:
+        roles.append("资料梳理老师")
+        reasons.append("当前资料较多，适合单独做覆盖分层和漏点检查。")
+    if protocol.get("process_quiz_count") or protocol.get("checkpoint_quiz_count"):
+        roles.append("出题老师")
+        reasons.append("当前流程包含持续测验，出题职责值得独立出来。")
+    if progress_entries >= 2 or due_mistakes:
+        roles.append("复盘老师")
+        reasons.append("已经进入持续推进或暴露薄弱点，复盘职责开始重要。")
+
+    deduped_roles: list[str] = []
+    for role in roles:
+        if role not in deduped_roles:
+            deduped_roles.append(role)
+    roles = deduped_roles
+
+    preference = protocol.get("multi_teacher_default", "auto")
+    if preference == "off":
+        decision_key = "off"
+        decision_label = "单老师即可"
+    elif len(roles) >= 4 or (len(roles) >= 3 and len(materials) >= 2):
+        decision_key = "on"
+        decision_label = "建议开启"
+    elif len(roles) >= 3:
+        decision_key = "optional"
+        decision_label = "可以考虑开启"
+    else:
+        decision_key = "off"
+        decision_label = "单老师即可"
+
+    combo_roles = roles if decision_key != "off" else ["主讲老师"]
+    combo = " + ".join(combo_roles)
+    fallback = "主讲老师兼顾主线、题目、复盘和资料分层。"
+    summary = f"{decision_label}：{combo}"
+    return {
+        "decision_key": decision_key,
+        "decision_label": decision_label,
+        "reasons": reasons or ["当前任务复杂度还不高，单老师模式足够。"],
+        "roles": roles,
+        "combo": combo,
+        "fallback": fallback,
+        "summary": summary,
+    }
+
+
+def write_coverage_map(
+    root: Path,
+    topic: str,
+    entries_by_level: dict[str, list[str]],
+    gaps: list[str],
+    next_priority: list[str],
+    move_later: list[str],
+    background_only: list[str],
+) -> Path:
+    path = planning_dir(root) / "coverage_map.md"
+    lines = [
+        "# 资料覆盖矩阵",
+        "",
+        f"主题：{topic}",
+        f"更新日期：{date.today().isoformat()}",
+        "",
+        "## 分层标准",
+        "",
+        "- 核心必讲：当前学习目标离不开，必须精讲、必须能复述、通常要进题目。",
+        "- 重点精讲：重要但次于主线，需要较完整理解，通常要有例子或追问。",
+        "- 支持理解：不是主角，但不补就会影响理解主线，需要简讲。",
+        "- 背景点到为止：知道它存在和大致作用即可，不展开成新主线。",
+        "- 本轮不展开：资料里有，但当前轮次先不讲，避免打断主线。",
+        "",
+        "## 覆盖原则",
+        "",
+        "- 资料中的点默认都要有去处，但不要求平均篇幅。",
+        "- 覆盖的目标是“有逻辑地处理全部资料”，不是“每个点都同样细讲”。",
+        "- 核心和重点优先进入当前阶段计划。",
+        "- 支持理解和背景点只在服务主线时进入讲解或题目。",
+        "- 本轮不展开的点也要记录原因，避免之后遗忘。",
+        "",
+        "## 分层概览",
+        "",
+    ]
+
+    for level in COVERAGE_LEVELS:
+        values = entries_by_level.get(level, [])
+        summary = "；".join(values) if values else "暂无"
+        lines.append(f"- {level}：{summary}")
+
+    lines.extend([
+        "",
+        "## 覆盖矩阵",
+        "",
+        "| 材料 | 知识点 / 片段 | 层级 | 为什么这样分层 | 所属阶段 | 所属单元 | 出题策略 | 当前状态 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ])
+
+    for level in COVERAGE_LEVELS:
+        meta = LEVEL_DEFAULTS[level]
+        for raw in entries_by_level.get(level, []):
+            material, point = parse_material_point_entry(raw)
+            if not point:
+                continue
+            row = (
+                f"| {table_cell(material)} | {table_cell(point)} | {table_cell(level)} | "
+                f"{table_cell(meta['reason'])} | {table_cell(meta['stage'])} | {table_cell(meta['unit'])} | "
+                f"{table_cell(meta['quiz'])} | {table_cell(meta['status'])} |"
+            )
+            lines.append(row)
+
+    lines.extend([
+        "",
+        "## 当前覆盖缺口",
+        "",
+    ])
+    if gaps:
+        lines.extend(f"- {item}" for item in gaps)
+    else:
+        lines.append("- 暂无明显缺口。")
+
+    lines.extend([
+        "",
+        "## 下一步处理",
+        "",
+        f"- 优先补齐哪些资料点：{'；'.join(next_priority) if next_priority else '待确认'}",
+        f"- 哪些点可以后移：{'；'.join(move_later) if move_later else '待确认'}",
+        f"- 哪些点只保留背景说明：{'；'.join(background_only) if background_only else '待确认'}",
+        "",
+    ])
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[写入] {path}")
+    return path
+
+
+def render_role_rows(roles: list[str]) -> list[str]:
+    rows: list[str] = []
+    for role in roles:
+        meta = ROLE_LIBRARY.get(role, {
+            "duty": "待补充职责",
+            "when": "待补充触发条件",
+            "output": "待补充输出",
+        })
+        rows.append(
+            f"| {table_cell(role)} | {table_cell(meta['duty'])} | "
+            f"{table_cell(meta['when'])} | {table_cell(meta['output'])} |"
+        )
+    return rows
+
+
+def write_agent_team(
+    root: Path,
+    topic: str,
+    decision_label: str,
+    reasons: list[str],
+    roles: list[str],
+    combo: str,
+    fallback: str,
+) -> Path:
+    path = planning_dir(root) / "agent_team.md"
+    lines = [
+        "# 多老师分工建议",
+        "",
+        f"主题：{topic}",
+        f"更新日期：{date.today().isoformat()}",
+        "",
+        "## 是否建议开启",
+        "",
+        f"- 建议：{decision_label}",
+        f"- 原因：{'；'.join(reasons) if reasons else '待补充'}",
+        "",
+        "## 推荐逻辑",
+        "",
+        "- 只有在单老师明显难以兼顾质量时，才建议开启多老师模式。",
+        "- 推荐多老师，不代表必须开启；用户始终可以选择单老师模式。",
+        "- 如果资料少、目标单一、只想快速推进，默认不启用。",
+        "",
+        "## 推荐角色分工",
+        "",
+        "| 角色 | 主要职责 | 什么时候需要 | 主要输出 |",
+        "| --- | --- | --- | --- |",
+    ]
+    lines.extend(render_role_rows(roles))
+    lines.extend([
+        "",
+        "## 当前建议",
+        "",
+        f"- 当前最适合的模式：{decision_label}",
+        f"- 如果开启多老师，建议最少角色组合：{combo}",
+        f"- 如果不开启，多老师职责由谁合并承担：{fallback}",
+        "",
+        "## 不开启时的单老师补偿",
+        "",
+        "- 主讲时必须显式兼顾：主线、题目、复盘、资料分层。",
+        "- 不能因为单老师模式，就忽略资料覆盖和问题收集。",
+        "",
+    ])
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[写入] {path}")
+    return path
+
+
+def build_study_plan(root: Path, topic: str) -> Path:
+    path = planning_dir(root) / "study_plan.md"
+    session = read_session_sections(root)
+    coverage = coverage_map_summary(root)
+    materials = coverage["materials"] or extract_bullets(session.get("当前资料", ""))
+    materials_text = "；".join(materials) if materials else "待补充"
+    focus_text = "；".join(extract_bullets(session.get("当前重点", ""))) or "待确认重点"
+    goal_text = compact_markdown_value(session.get("当前目标", ""))
+    process_every = read_protocol(root).get("process_quiz_every", "待确认")
+
+    rows = [
+        ("1", "建立整体地图与资料边界", "先把主线、层级和非目标范围说清，避免一开始就扎进枝节。", materials_text, "覆盖矩阵初稿；主线框架", "", "进行中"),
+        ("2", "吃透核心与重点", "围绕核心必讲和重点精讲内容展开，这是主线学习收益最高的阶段。", materials_text, f"重点笔记；围绕“{focus_text}”的过程题", "", "未开始"),
+        ("3", "应用、表达与迁移", "把重点放进例子、练习、项目或表达场景，避免只停留在知道定义。", materials_text, "例子或练习；表达框架", "", "未开始"),
+        ("4", "复盘、测验与收束", "回收薄弱点，验证整体掌握，再决定下一轮范围。", materials_text, f"阶段测验；复盘结论；下一轮建议", "", "未开始"),
+    ]
+
+    lines = [
+        "# 学习计划",
+        "",
+        f"主题：{topic}",
+        f"更新日期：{date.today().isoformat()}",
+        "",
+        "## 规划原则",
+        "",
+        "- 先建立整体地图，再细化阶段和当前学习块。",
+        "- 资料中的点默认都要有去处，但不要求平均用力。",
+        "- 优先使用 `coverage_map.md` 做资料点分层，再据此安排阶段。",
+        "- 核心和重点内容进入主线精讲；支持理解和背景内容按需要简讲；明确非目标内容先不展开。",
+        "",
+        "## 资料覆盖策略",
+        "",
+        f"- 核心必讲：{coverage['counts']['核心必讲']} 项",
+        f"- 重点精讲：{coverage['counts']['重点精讲']} 项",
+        f"- 支持理解：{coverage['counts']['支持理解']} 项",
+        f"- 背景点到为止：{coverage['counts']['背景点到为止']} 项",
+        f"- 本轮不展开：{coverage['counts']['本轮不展开']} 项",
+        "",
+        "## 阶段安排",
+        "",
+        "| 阶段 | 目标 | 为什么这样安排 | 资料 | 产出物 | 目标日期 | 状态 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+
+    for stage, goal, why, materials_value, outputs, target_date, status in rows:
+        lines.append(
+            f"| {stage} | {table_cell(goal)} | {table_cell(why)} | {table_cell(materials_value)} | "
+            f"{table_cell(outputs)} | {table_cell(target_date)} | {table_cell(status)} |"
+        )
+
+    lines.extend([
+        "",
+        "## 阶段到资料层级映射",
+        "",
+        "| 阶段 | 主要覆盖层级 | 说明 |",
+        "| --- | --- | --- |",
+        "| 1 | 核心必讲 / 背景点到为止 / 本轮不展开 | 先搭主线并控边界，不深挖枝节 |",
+        "| 2 | 核心必讲 / 重点精讲 / 支持理解 | 这是主线精讲阶段 |",
+        "| 3 | 重点精讲 / 支持理解 / 背景点到为止 | 进入应用、表达和迁移 |",
+        "| 4 | 核心必讲 / 重点精讲 | 用复盘和测试收束主线 |",
+        "",
+        "## 当前聚焦点",
+        "",
+        "- 当前阶段：阶段 1",
+        f"- 当前单元：{goal_text if goal_text != '待确认' else '先完成资料分层和主线梳理'}",
+        f"- 下一个检查点：按学习协议在 {process_every} 后检查是否进入过程测验",
+        "",
+    ])
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[写入] {path}")
+    return path
 
 
 def due_review_summary(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -264,6 +731,27 @@ def recommendation(root: Path) -> dict[str, str]:
         return {
             "key": "align",
             "message": "当前会话还有待确认问题，先补齐再进入学习。",
+        }
+
+    materials = extract_bullets(session_sections.get("当前资料", ""))
+    coverage = coverage_map_summary(root)
+    if materials and coverage["total"] == 0:
+        return {
+            "key": "coverage",
+            "message": "当前已有资料，但还没做覆盖分层。建议先把资料点分成核心、重点、支持和背景，再继续推进。",
+        }
+
+    if not study_plan_ready(root):
+        return {
+            "key": "plan",
+            "message": "建议先根据当前资料和覆盖层级生成阶段学习计划，再进入具体学习块。",
+        }
+
+    inferred_team = infer_agent_team(root)
+    if inferred_team["decision_key"] in {"on", "optional"} and not agent_team_configured(root):
+        return {
+            "key": "team",
+            "message": f"当前任务复杂度已足够，{inferred_team['decision_label']}多老师分工，建议先确认角色安排。",
         }
 
     due_quizzes, due_mistakes = due_review_summary(root)
@@ -318,6 +806,10 @@ def show_status(root: Path) -> None:
     latest_progress = read_latest_progress(pdir / "progress.md")
     rec = recommendation(root)
     due_quizzes, due_mistakes = due_review_summary(root)
+    coverage = coverage_map_summary(root)
+    inferred_team = infer_agent_team(root)
+    team_ready = agent_team_configured(root)
+    plan_ready = study_plan_ready(root)
 
     print("当前学习状态")
     print(f"- 根目录：{root}")
@@ -330,6 +822,10 @@ def show_status(root: Path) -> None:
     print(f"- 当前场景：{compact_markdown_value(session_sections.get('当前场景', ''))}")
     print(f"- 当前目标：{compact_markdown_value(session_sections.get('当前目标', ''))}")
     print(f"- 当前重点：{compact_markdown_value(session_sections.get('当前重点', ''))}")
+    print(f"- 资料覆盖：{format_coverage_brief(coverage)}")
+    print(f"- 学习计划：{'已细化' if plan_ready else '待细化'}")
+    print(f"- 多老师建议：{inferred_team['summary']}")
+    print(f"- 分工方案：{'已记录' if team_ready else '待确认'}")
     if latest_progress:
         print(f"- 最近一块：{latest_progress.get('title', '无')}")
         print(f"- 最近总结：{latest_progress.get('总结', '无')}")
@@ -467,6 +963,54 @@ def run_align_wizard(root: Path, topic: str, args: argparse.Namespace | None = N
     run_script(SESSION_SCRIPT, session_args)
 
 
+def run_coverage_wizard(root: Path, topic: str, args: argparse.Namespace | None = None) -> None:
+    rows = coverage_map_summary(root)["rows"]
+    args = args or argparse.Namespace()
+
+    print("现在开始做资料覆盖分层。默认要求资料里的点都有去处，但不是每个点都同样细讲。")
+    defaults = {level: stringify_coverage_entries(rows, level) for level in COVERAGE_LEVELS}
+    entries_by_level = {
+        "核心必讲": ask_list("核心必讲条目（格式：材料=>知识点）", getattr(args, "core", []) or defaults["核心必讲"]),
+        "重点精讲": ask_list("重点精讲条目（格式：材料=>知识点）", getattr(args, "key", []) or defaults["重点精讲"]),
+        "支持理解": ask_list("支持理解条目（格式：材料=>知识点）", getattr(args, "support", []) or defaults["支持理解"]),
+        "背景点到为止": ask_list("背景点到为止条目（格式：材料=>知识点）", getattr(args, "background", []) or defaults["背景点到为止"]),
+        "本轮不展开": ask_list("本轮不展开条目（格式：材料=>知识点）", getattr(args, "defer", []) or defaults["本轮不展开"]),
+    }
+    gaps = ask_list("当前覆盖缺口（可留空）", getattr(args, "gap", []) or [])
+    next_priority = ask_list("优先补齐哪些资料点", getattr(args, "next_priority", []) or [])
+    move_later = ask_list("哪些点可以后移", getattr(args, "move_later", []) or [])
+    background_only = ask_list("哪些点只保留背景说明", getattr(args, "background_only", []) or [])
+
+    write_coverage_map(root, topic, entries_by_level, gaps, next_priority, move_later, background_only)
+    print()
+    print(f"覆盖分层已完成：{format_coverage_brief(coverage_map_summary(root))}")
+
+
+def run_team_wizard(root: Path, topic: str, args: argparse.Namespace | None = None) -> None:
+    inferred = infer_agent_team(root)
+    args = args or argparse.Namespace()
+
+    print(f"系统初步判断：{inferred['summary']}")
+    decision = ask_choice(
+        "当前是否建议开启多老师模式",
+        [("on", "建议开启"), ("optional", "可以考虑开启"), ("off", "单老师即可")],
+        getattr(args, "decision", "") or inferred["decision_key"],
+    )
+    decision_label = {
+        "on": "建议开启",
+        "optional": "可以考虑开启",
+        "off": "单老师即可",
+    }[decision]
+    reasons = ask_list("推荐原因", getattr(args, "reason", []) or inferred["reasons"])
+    roles = ask_list("建议保留的角色", getattr(args, "role", []) or inferred["roles"])
+    combo = ask_text("如果开启多老师，建议最少角色组合", getattr(args, "combo", "") or inferred["combo"])
+    fallback = ask_text("如果不开启，多老师职责由谁合并承担", getattr(args, "fallback", "") or inferred["fallback"])
+
+    write_agent_team(root, topic, decision_label, reasons, roles, combo, fallback)
+    print()
+    print(f"当前分工建议已更新：{decision_label}")
+
+
 def build_current_block(root: Path, unit_hint: str = "") -> Path:
     pdir = planning_dir(root)
     protocol = read_protocol(root)
@@ -477,6 +1021,8 @@ def build_current_block(root: Path, unit_hint: str = "") -> Path:
     focus_items = extract_bullets(session.get("当前重点", ""))
     materials = extract_bullets(session.get("当前资料", ""))
     non_goals = extract_bullets(session.get("当前非目标", ""))
+    coverage = coverage_map_summary(root)
+    inferred_team = infer_agent_team(root)
     recommended_unit = unit_hint or latest.get("下一步") or (focus_items[0] if focus_items else "当前学习块")
     process_every = protocol.get("process_quiz_every", "待确认")
     process_quiz_count = protocol.get("process_quiz_count", "待确认")
@@ -508,6 +1054,8 @@ def build_current_block(root: Path, unit_hint: str = "") -> Path:
 - 当前重点：{("；".join(focus_items) if focus_items else "待确认")}
 - 当前资料：{("；".join(materials) if materials else "待确认")}
 - 当前非目标：{("；".join(non_goals) if non_goals else "无")}
+- 资料覆盖：{format_coverage_brief(coverage)}
+- 当前分工建议：{inferred_team["summary"]}
 
 ## 节奏提醒
 
@@ -648,6 +1196,9 @@ def run_guide(root_hint: str = "", topic_hint: str = "") -> int:
         action = ask_choice(
             "下一步想怎么做？",
             [
+                ("coverage", "做资料覆盖分层"),
+                ("plan", "生成阶段学习计划"),
+                ("team", "确认多老师分工建议"),
                 ("block", "查看当前学习块建议"),
                 ("record", "记录刚学完的一块"),
                 ("quiz", "生成一轮测验"),
@@ -657,10 +1208,16 @@ def run_guide(root_hint: str = "", topic_hint: str = "") -> int:
                 ("status", "再看一次当前状态"),
                 ("quit", "退出引导模式"),
             ],
-            rec["key"] if rec["key"] in {"block", "record", "quiz", "review", "align", "protocol", "status"} else "status",
+            rec["key"] if rec["key"] in {"coverage", "plan", "team", "block", "record", "quiz", "review", "align", "protocol", "status"} else "status",
         )
 
-        if action == "block":
+        if action == "coverage":
+            run_coverage_wizard(root, topic)
+        elif action == "plan":
+            build_study_plan(root, topic)
+        elif action == "team":
+            run_team_wizard(root, topic)
+        elif action == "block":
             build_current_block(root)
         elif action == "record":
             run_record_wizard(root, topic)
@@ -698,6 +1255,24 @@ def cmd_protocol(args: argparse.Namespace) -> int:
 def cmd_align(args: argparse.Namespace) -> int:
     root, topic = ensure_workspace(args.root, args.topic)
     run_align_wizard(root, topic, args)
+    return 0
+
+
+def cmd_coverage(args: argparse.Namespace) -> int:
+    root, topic = ensure_workspace(args.root, args.topic)
+    run_coverage_wizard(root, topic, args)
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    root, topic = ensure_workspace(args.root, args.topic)
+    build_study_plan(root, topic)
+    return 0
+
+
+def cmd_team(args: argparse.Namespace) -> int:
+    root, topic = ensure_workspace(args.root, args.topic)
+    run_team_wizard(root, topic, args)
     return 0
 
 
@@ -766,6 +1341,35 @@ def build_parser() -> argparse.ArgumentParser:
     align.add_argument("--focus", action="append", default=[], help="本轮重点")
     align.add_argument("--non-goal", action="append", default=[], help="本轮非目标")
     align.set_defaults(func=cmd_align)
+
+    coverage = subparsers.add_parser("coverage", help="整理资料覆盖分层")
+    coverage.add_argument("--root", default="", help="项目或笔记根目录")
+    coverage.add_argument("--topic", default="", help="当前学习主题")
+    coverage.add_argument("--core", action="append", default=[], help="核心必讲条目，格式：材料=>知识点")
+    coverage.add_argument("--key", action="append", default=[], help="重点精讲条目，格式：材料=>知识点")
+    coverage.add_argument("--support", action="append", default=[], help="支持理解条目，格式：材料=>知识点")
+    coverage.add_argument("--background", action="append", default=[], help="背景点到为止条目，格式：材料=>知识点")
+    coverage.add_argument("--defer", action="append", default=[], help="本轮不展开条目，格式：材料=>知识点")
+    coverage.add_argument("--gap", action="append", default=[], help="当前覆盖缺口")
+    coverage.add_argument("--next-priority", action="append", default=[], help="优先补齐项")
+    coverage.add_argument("--move-later", action="append", default=[], help="可后移项")
+    coverage.add_argument("--background-only", action="append", default=[], help="只保留背景说明的项")
+    coverage.set_defaults(func=cmd_coverage)
+
+    plan = subparsers.add_parser("plan", help="生成阶段学习计划")
+    plan.add_argument("--root", default="", help="项目或笔记根目录")
+    plan.add_argument("--topic", default="", help="当前学习主题")
+    plan.set_defaults(func=cmd_plan)
+
+    team = subparsers.add_parser("team", help="确认多老师分工建议")
+    team.add_argument("--root", default="", help="项目或笔记根目录")
+    team.add_argument("--topic", default="", help="当前学习主题")
+    team.add_argument("--decision", default="", help="on / optional / off")
+    team.add_argument("--reason", action="append", default=[], help="推荐原因")
+    team.add_argument("--role", action="append", default=[], help="建议保留的角色")
+    team.add_argument("--combo", default="", help="建议最少角色组合")
+    team.add_argument("--fallback", default="", help="不开启时的合并承担方式")
+    team.set_defaults(func=cmd_team)
 
     block = subparsers.add_parser("block", help="生成当前学习块建议")
     block.add_argument("--root", default="", help="项目或笔记根目录")
