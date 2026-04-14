@@ -1083,12 +1083,18 @@ def run_quiz_wizard(root: Path, topic: str, args: argparse.Namespace | None = No
     non_goals = ask_list("当前非目标", getattr(args, "non_goal", []) or extract_bullets(session.get("当前非目标", "")))
     classic_notes = ask_list("经典题或经典结论（可留空）", getattr(args, "classic_note", []) or [])
     web_notes = ask_list("网络延伸要点（可留空）", getattr(args, "web_note", []) or [])
+    output_format = ask_choice(
+        "输出格式",
+        [("markdown", "Markdown"), ("json", "JSON")],
+        getattr(args, "output_format", "") or "markdown",
+    )
     output_name = ask_text("输出文件名", getattr(args, "output_name", "") or "")
 
     quiz_args = [
         "--root", str(root),
         "--topic", topic,
         "--scene", scene,
+        "--output-format", output_format,
         "--output-name", output_name,
     ]
     if getattr(args, "question_count", None) is not None:
@@ -1389,6 +1395,7 @@ def build_parser() -> argparse.ArgumentParser:
     quiz.add_argument("--web-note", action="append", default=[], help="网络延伸")
     quiz.add_argument("--question-count", type=int, default=None, help="题量")
     quiz.add_argument("--extension-mode", default="", help="延伸模式")
+    quiz.add_argument("--output-format", default="", help="输出格式：markdown 或 json")
     quiz.add_argument("--output-name", default="", help="输出文件名")
     quiz.set_defaults(func=cmd_quiz)
 
