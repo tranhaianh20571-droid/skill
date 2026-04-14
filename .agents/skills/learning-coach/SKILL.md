@@ -274,9 +274,8 @@ python <skill-dir>/scripts/learn.py team --root "<项目或笔记根目录>"
 - 和当前重点直接相关
 - 不是只和补充背景相关
 
-生成题目后，默认同时输出：
-- Markdown 版题目，方便直接阅读和作答
-- JSON 版题目，方便未来接 UI 或插件渲染选择题面板
+生成题目后，默认输出 Markdown，方便直接阅读和作答。
+如果后续确实需要接 UI 或插件，再显式指定 JSON 输出，而不是默认同时输出两份。
 
 ### 7. 多老师模式
 
@@ -395,7 +394,7 @@ python <skill-dir>/scripts/learn.py team --root "<项目或笔记根目录>"
 需要下面这些题目设计规则时，读取 [quiz_design.md](./references/quiz_design.md)：
 - 材料题、经典题、网络延伸题的比例
 - 如何保证题目围绕当前重点
-- 为什么 JSON 输出可以为后续 UI 做准备
+- 为什么默认输出 Markdown 更合适
 
 如果需要项目级的稳定学习规则，可以让初始化脚本顺便创建根目录 `AGENTS.md`。
 

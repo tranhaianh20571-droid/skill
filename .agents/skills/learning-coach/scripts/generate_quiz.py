@@ -217,6 +217,12 @@ def main() -> int:
         default="",
         help="输出文件名，不带扩展名时会自动处理",
     )
+    parser.add_argument(
+        "--output-format",
+        default="markdown",
+        choices=["markdown", "json"],
+        help="输出格式，默认 markdown",
+    )
     args = parser.parse_args()
 
     if not args.material_point:
@@ -314,8 +320,8 @@ def main() -> int:
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     base_name = slugify(args.output_name or f"{args.topic}-{timestamp}")
-    markdown_path = outputs_dir / f"{base_name}.md"
-    json_path = outputs_dir / f"{base_name}.json"
+    output_suffix = ".md" if args.output_format == "markdown" else ".json"
+    output_path = outputs_dir / f"{base_name}{output_suffix}"
 
     bundle = {
         "topic": args.topic,
@@ -331,23 +337,25 @@ def main() -> int:
         "questions": questions,
     }
 
-    markdown_path.write_text(render_markdown(bundle), encoding="utf-8")
-    json_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.output_format == "markdown":
+        output_path.write_text(render_markdown(bundle), encoding="utf-8")
+    else:
+        output_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
 
     bank_row = (
         f"| {table_cell(date.today().isoformat())} | {table_cell(args.topic)} | {table_cell(args.scene or '未指定')} | "
         f"{table_cell('；'.join(focuses))} | {len(questions)} | {table_cell(source_strategy)} | "
-        f"{table_cell(str(markdown_path))} | {table_cell(str(json_path))} |"
+        f"{table_cell(args.output_format)} | {table_cell(str(output_path))} |"
     )
     with quiz_bank_path.open("a", encoding="utf-8") as handle:
         handle.write("\n" + bank_row + "\n")
 
-    print(f"[写入] {markdown_path}")
-    print(f"[写入] {json_path}")
+    print(f"[写入] {output_path}")
     print(f"[追加] {quiz_bank_path}")
     print()
     print(f"题目数量：{len(questions)}")
     print(f"出题策略：{source_strategy}")
+    print(f"输出格式：{args.output_format}")
     return 0
 
 
