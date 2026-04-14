@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习教练"
+  short_description: "根据学习目标与资料制定计划、安排测验并持续记录进度"
+  default_prompt: "使用 $learning-coach，先和我对齐目标、资料、颗粒度、重点与当前场景，再开始讲解，并把依据、调整和学习记录持续写入文件。"

@@ -1,0 +1,7 @@
+tools/*.sh text eol=lf
+tools/*.ps1 text eol=crlf
+README.md text eol=lf
+.agents/skills/learning-coach/SKILL.md text eol=lf
+.agents/skills/learning-coach/**/*.md text eol=lf
+.agents/skills/learning-coach/**/*.py text eol=lf
+.agents/skills/learning-coach/**/*.yaml text eol=lf
