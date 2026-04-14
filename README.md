@@ -1,0 +1,3 @@
+# learning-coach
+
+Initializing repository.
