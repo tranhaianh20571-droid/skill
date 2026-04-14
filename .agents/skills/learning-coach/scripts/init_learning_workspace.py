@@ -24,6 +24,8 @@ DEFAULT_FILES = {
     "issue_log.md": "issue_log.md",
     "quiz_bank.md": "quiz_bank.md",
     "learning_protocol.md": "learning_protocol.md",
+    "coverage_map.md": "coverage_map.md",
+    "agent_team.md": "agent_team.md",
 }
 
 

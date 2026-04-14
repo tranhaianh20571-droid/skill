@@ -100,6 +100,8 @@ def main() -> int:
     ensure_file(planning_dir / "grounding_log.md", "grounding_log.md", args.topic)
     ensure_file(planning_dir / "adjustment_log.md", "adjustment_log.md", args.topic)
     ensure_file(planning_dir / "issue_log.md", "issue_log.md", args.topic)
+    ensure_file(planning_dir / "coverage_map.md", "coverage_map.md", args.topic)
+    ensure_file(planning_dir / "agent_team.md", "agent_team.md", args.topic)
     protocol = load_protocol(planning_dir)
 
     missing_questions: list[str] = []
